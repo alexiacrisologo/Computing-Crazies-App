@@ -1,0 +1,884 @@
+---
+title: "NCAA Bracket Challenge: A Modeling and Dashboard Perspective"
+subtitle: "Sta 323 - Final Project"
+author:
+- Jeffrey Bohrer
+- Alexia Crisologo
+- Max Hyman
+- Cooper Likosar
+- Ben Sherman
+format: 
+  html:
+    self-contained: true
+    mainfont: "Computer Modern"
+    include-in-header: 
+      text: |
+        <style>
+          body {
+            text-align: justify;
+            font-family: "Computer Modern", serif;
+            word-break: break-word; /* NEW: break long strings */
+          }
+        </style>
+---
+
+```{r setup, include=FALSE}
+### Loading necessary packages
+library(tidyverse)
+library(tidymodels)
+library(kableExtra)
+library(DT)
+library(htmltools)
+library(corrplot)
+library(caret)
+library(car)
+library(boot)
+```
+
+```{r, include= FALSE}
+### Reading in data
+tournament_data_all <- read_csv("data/march_madness.csv")
+```
+
+## I. Introduction
+
+College sports are amazing: they accumulated over \$1.3 billion in revenue during the 2022-23 fiscal year, brought together more than 1,000 colleges from all around the country, and are enjoyed by one third of the US population (ESPN.com, 2024; NCSA, 2018; Meyers, 2025). Out of all the sports, basketball is one of the most relevant, making up \~26% of NCAA's Division I (DI) revenue (Noby-Williams, 2024).
+
+Among basketball fans, March Madness holds a special place: a high-stakes, single-elimination tournament where even a slight edge in team performance can determine whether a team advances or exits early. Understanding what factors drive success in this tournament and predicting the rounds each selected team makes it to has long been a subject of fascination for fans. One must look no further at the yearly-bracket challenges hosted by the NCAA and ESPN alike, in which more than 24 million predictions of the way tournament brackets would look where shared (Ota, 2025).
+
+Subsequently, the purpose of the following project is exploring how different statistical indicators of team strength can be leveraged to predict team success in the tournament. In terms of data source, a curated list of historical KenPom team ratings and performance from 2002 to 2025 tournaments will be employed as the main backbone of the project (Pilafas, 2025). Considering this, the following pipeline structure will be followed: (i) dataset will be described and exploratory data analysis will be performed to assess which predictors to employ; (ii) once predictors are chosen, a series of logistic regression models will be fitted to estimate the probability that a given team advances to the Final Four, reaches the Championship, or wins the National Title; (iii) these models will be then evaluated and interpreted in terms of their ROC curves, AUC, AIC, and BIC to determine their predictive power; (iv) an interactive Shiny dashboard that employs these models to allow for user-simulated hypothetical matchups (be it historical like Duke '25 vs. Duke '05 or customized) will be developed.
+
+Through the use of rigorous statistical modeling and an accessible user interface, this project showcases how quantitative analysis can better inform sport predictions, while at the same time providing a practical tool to craft the best bracket possible!
+
+## II. Methodology
+
+### i. Describing the Dataset
+
+As mentioned previously, the dataset used in this project is sourced from Kaggle and aggregates comprehensive historical data on NCAA's DI men's basketball team performance from the 2002 season through 2025. It was originally sourced from KenPom.com and further processed through Domo's Magic ETL, meaning it consolidates a wide range of metrics into a single, analysis-ready file (Pilafas, 2025). This made it extremely attractive for the sake of the project instead of scraping KenPom for data in the first place. The dataset consists of 165 variables and 8,315 observations.
+
+Each row in the dataset corresponds to one team in a given season, capturing a comprehensive set of variables across several domains (some of which are not listed):
+
+-   Tempo metrics: adjusted and raw tempo, and related ranks.
+
+-   Offensive and defensive efficiency: adjusted and raw offensive and defensive efficiency, measuring points scored and allowed per 100 possessions.
+
+-   Point distribution: metric breaking down scoring by field goals, triples, and free throws.
+
+-   Pre-tournament statistics: Pre-March Madness performance indicators.
+
+-   Height and experience metrics: average player height by position, team-wide effective height, player experience, bench usage.
+
+-   Position-specific contributions: points, offensive and defensive rebounds.
+
+-   Miscellaneous statistics: assists, steals, turnover rates, among others.
+
+-   Team and coach data: full team names, ESPN names, conferences (full and abbreviated), head coach, coaching tenure, experience, etc.
+
+-   Tournament information: NCAA tournament seed, region, post-season tournament participation, and indicators of whether the team made it to the final four, championship appearance, and tournament victory.
+
+-   AP poll ranking: whether a team ranked in the Top 25 during Week 6 of the season.
+
+-   Vulnerable Top 2 Indicator: indicator flagging high seeded teams at risk of early elimination due to hard early matchups.
+
+Columns are consistently named and standardized across seasons to allow seamless analysis across time. This ensures that performance trends can be studied across the years without inconsistencies in naming and/or structure.
+
+By providing both raw performance metrics and contextual data, this dataset is extremely powerful in the sense that it enables a wide range of analysis possibilities, making it an ideal foundation for the modeling and dashboard tasks of this project. Due to how robust the dataset is, having 165 variables, the purpose of the subsequent exploratory data analysis (EDA) will be to narrow down the number of variables to be considered for logistic modeling.
+
+### ii. Exploratory Data Analysis
+
+From the number of variables available, 165, it is evident that the number chosen for modeling must be narrowed down as a means of preventing overfitting. As a means of doing so, the following steps will be pursued: (a) identifying thematic groups such as offensive and defensive statistics, point distributions, team qualities, among others; (b) collapsing redundant variables from these thematic groupings via correlation checks and selecting most meaningful parameter; and (c) filtering statistics with near-zero variance across teams.
+
+#### a. Thematic Groups and Relevant Variables
+
+From a glance at the dataset, it is evident that there are a lot of variables that are irrelevant for modelling and generalization purposes. These are namely the ones that focus on team-specific information: `Short Conference Name`, `Mapped Conference Name`, `Mapped ESPN Team Name`, `Current Coach`, `Full Team Name`, `Region`, `Post-Season Tournament`, `Post-Season Tournament Sorting Index`, `Vulnerable Top 2 Seed?`, `Top 12 in AP Top 25 During Week 6`. These will be promptly discarded due to the risk of overfitting.
+
+```{r, echo=FALSE, warning = FALSE}
+datatable(
+  head(tournament_data_all,10),  # or select only some columns
+  options = list(scrollX = TRUE),
+  class = 'compact stripe nowrap',
+   caption = tags$caption("Table 1: Kaggle March Madness Dataset sample (see raw code in VI.ii)"
+  )
+)
+```
+
+After discarding these variables, we are left with team statistics. These can be roughly separated into the following categories of predictors:
+
+-   Tournament qualities: `Season`.
+
+-   Overall tempo: `Adjusted Temo`, `Adjusted Tempo Rank`, `Raw Tempo`, `Raw Tempo Rank`.
+
+-   Offensive performance: `Adjusted Offensive Efficiency`, `Adjusted Offensive Efficiency Rank`, `Raw Offensive Efficiency`, `Raw Offensive Efficiency Rank`, `Avg Possession Length (Offense)`, `Avg Possession Length (Offense) Rank`, `eFGPct`, `RankeFGPct`, `ORPct`, `RankORPct`, `FTRate`, `RankFTRate`, `OffFT`, `RankOffFT`, `Off2PtFG`, `RankOff2PtFG`, `Off3PtFG`,`RankOff3PtFG`.
+
+-   Defensive performance: `Adjusted Defensive Efficiency`, `Adjusted Defensive Efficiency Rank`, `Raw Defensive Efficiency`, `Raw Defensive Efficiency Rank`, `Avg Possession Length (Defense)`, `Avg Possession Length (Defense) Rank`, `TOPct`, `RankTOPct`, `DefFT`, `RankDefFT`, `Def2PtFG`, `RankDef2PtFG`, `Def3PtFG`, `RankDef3PtFG`.
+
+-   Pre-tournament metrics: same as all of the above. Will not be employed as we care about data during the tournament.
+
+-   Opposing team metrics: `OppFG2Pct` `RankOppFG2Pct`, `OppFG3Pct`, `RankOppFG3Pct`, `OppFTPct`, `RankOppFTPct`, `OppBlockPct`, `RankOppBlockPct`, `OppFG3Rate`, `RankOppFG3Rate`, `OppARate`, `RankOppARate`, `OppStlRate`, `RankOppStlRate`, `OppNSTRate`, `RankOppNSTRate`.
+
+-   Overarching metrics:`FG2Pct`, `RankFG2Pct`, `FG3Pct`, `RankFG3Pct`, `FTPct`, `RankFTPct`, `BlockPct`, `RankBlockPct`, `FG3Rate`, `RankFG3Rate`, `ARate`, `RankARate`, `StlRate`, `RankStlRate`, `DFP`, `NSTRate`, `RankNSTRate`.
+
+-   Team qualities: `AvgHeight`, `RankAvgHeight`, `CenterHeight`, `RankCenterHeight`, `PFHeight`, `RankPFHeight`, `SFHeight`, `RankSFHeight`, `SGHeight`, `RankSGHeight`, `PGHeight`, `RankPGHeight`, `EffectiveHeight`, `RankEffectiveHeight`, `Experience`, `RankExperience`, `Bench`, `BenchRank`, `CenterPts`, `RankCenterPts`, `PFPts`, `RankPFPts`, `SFPts`, `RankSFPts`, `SGPts`, `RankSGPts`, `PGPts`, `RankPGPts`, `CenterOR`, `RankCenterOR`, `PFOR`, `RankPFOR`,`SFOR`, `RankSFOR`, `SGOR`, `RankSGOR`, `PGOR`, `RankPGOR`, `CenterDR`, `RankCenterDR`, `PFDR`, `RankPFDR`, `SFDR`, `RankSFDR`, `SGDR`, `RankSGDR`, `PGDR`, `RankPGDR`, `Net Rating`, `Net Rating Rank`.
+
+In terms of response variables, the main ones that will be the focus of this project are `Tournament Winner?`, `Tournament Championship?` and `Final Four?`.
+
+#### b. Multicollinearity and Redundance
+
+As a means of pruning the number of available predictors the following approach will be followed: (i) removing evidently redundant predictors or predictors that are a compounded measure of others (for instance, rank, raw and adjusted offensive efficiency), (ii) conducting multiple correlation matrices and removing highly correlated predictors, (iii) conducting variance-inflating factor analysis to assess any remainder multicollinearity in predictors (see model fitting).
+
+To begin pruning, it is evident that the most straightforward predictors to remove are the ones that pertain to the rank of the team in a given category and their raw score in said category. This is so because adjusted values provide better information and rank is a function of such a value and raw-score lacks context. This is particularly true for offensive, defensive, opposing team metrics, and team qualities. Similarly, if there is a metric that is the result of linear combination of the other ones, it will be prioritized. For instance, average height is a combination of the heights of all players (Center, PF, SF, SG, PG, among others). Thus, individual player contributions will be ignored as to prevent overfitting. After this simple filter, the thematic categories previously established are simplified immensely:
+
+-   Tournament qualities: `Season`.
+
+-   Overall tempo: `Adjusted Temo`.
+
+-   Offensive performance: `Adjusted Offensive Efficiency`, `Avg Possession Length (Offense)`, `eFGPct`, `ORPct`, `FTRate`, `OffFT`, `Off2PtFG`, `Off3PtFG`.
+
+-   Defensive performance: `Adjusted Defensive Efficiency`, `Avg Possession Length (Defense)`, `TOPct`, `DefFT`, `Def2PtFG`, `Def3PtFG`.
+
+-   Opposing team metrics: `OppFG2Pct`, `OppFG3Pct`, `OppFTPct`, `OppBlockPct`, `OppFG3Rate`, `OppARate`, `OppStlRate`, `OppNSTRate`.
+
+-   Overarching metrics:`FG2Pct`, `FG3Pct`, `FTPct`, `BlockPct`, `FG3Rate`, `ARate`, `StlRate`, `NSTRate`.
+
+-   Team qualities: `EffectiveHeight`, `Experience`, `Bench`.
+
+Thus, we have greatly reduced the number of available predictor variables from 165 to 36. Nevertheless, as a means of further simplifying, multiple correlation matrices will be conducted as a means of reducing redundancy among predictors.
+
+```{r, echo = FALSE, fig.cap="Figure 1. Correlation heatmap for offensive and defensive parameters. Some degree of correlation is evident between AdjOE and AdjDE (r = -0.5). Likewise, TOPct seems to be correlated with a lot of other variables (see raw code in VI.iii).", warning = FALSE}
+
+cor_matrix_def_off <- cor(
+  tournament_data_all[c("Adjusted Offensive Efficiency", 
+                        "Avg Possession Length (Offense)", 
+                        "eFGPct", "ORPct", "FTRate", "OffFT", 
+                        "Off2PtFG", "Off3PtFG", "Adjusted Defensive Efficiency", 
+                        "Avg Possession Length (Defense)", 
+                        "TOPct", "DefFT", "Def2PtFG", 
+                        "Def3PtFG")]|>
+                     select(where(is.numeric)),
+                  use = "pairwise.complete.obs")
+
+par(family = "Computer Modern")
+
+corrplot(
+  cor_matrix_def_off, 
+  method = "color", 
+  type = "upper", 
+  addCoef.col = "black", 
+  tl.col = "black",
+  tl.cex = 0.6, 
+  number.cex = 0.4
+)
+```
+
+From the correlation heatmap, it is evident that `TOPct` should be removed as a predictor given that it is loosely correlated ($|r|>0.3$) with 5 other predictors. Similarly, possession lengths should be removed as they are correlated with multiple predictors. Likewise, the correlation between the different types of scoring should be assessed given that there seems to be further correlation. Similarly, adjDE will be dropped as it exhibits correlation with offensive efficiency.
+
+```{r, echo = FALSE, fig.cap="Figure 2. Correlation heatmap among scoring parameters. It is evident that 2PT and 3PT field goals exhibit high degrees of correlation |r| > 0.5 (see raw code in VI.iv)", warning = FALSE}
+
+cor_matrix_scoring <- cor(
+  tournament_data_all[c("FG2Pct", "FG3Pct", "FTPct", 
+                        "FG3Rate", "eFGPct",
+                        "FTRate", "OffFT", "Off2PtFG", 
+                        "Off3PtFG", "DefFT", "Def2PtFG", 
+                         "Def3PtFG"
+                        )]|>
+                     select(where(is.numeric)),
+                  use = "pairwise.complete.obs")
+
+par(family = "Computer Modern")
+
+corrplot(
+  cor_matrix_scoring, 
+  method = "color", 
+  type = "upper", 
+  addCoef.col = "black", 
+  tl.col = "black",
+  tl.cex = 0.6, 
+  number.cex = 0.6
+)
+```
+
+From the scoring parameter heatmap, it is evident that eFGPct is correlated with FG2Pct ($|r|=0.91$), FG3Pct ($|r|=0.78$), FTPct ($|r|=0.54$), and FG3Rate ($|r|=0.38$). Subsequently, these 4 parameters will be removed from the final logistic models as a means of preventing model assumption issues. Additionally, it is also worth adding that offensive and defensive 2FG and 3FG seem to be highly correlated with $|r|>0.5$. Subsequently, only offensive and defensive 2PtFG will be accounted for as to prevent issues with multicollinearity and because they are more frequent in games than triples.
+
+Lastly, a correlation heatmap for opponent team metrics and their respective counterparts will be conducted to assess if they should be included in the model and weather matchup competence is already accounted for by other predictors.
+
+```{r, echo = FALSE, fig.cap="Figure 3. Correlation heatmap among opponent metrics and their team counterparts. NSTRate is highly correlated with multiple predictors. Subsequently, it will be dropped (see raw code in VI.v).", warning = FALSE}
+
+cor_matrix_opponent <- cor(
+  tournament_data_all[c("OppFG2Pct",
+                        "OppBlockPct",
+                        "OppARate", 
+                        "OppStlRate", 
+                        "OppNSTRate",
+                        "FG2Pct", 
+                        "ARate", 
+                        "StlRate",
+                        "NSTRate", 
+                        "BlockPct"
+                        )]|>
+                     select(where(is.numeric)),
+                  use = "pairwise.complete.obs")
+
+par(family = "Computer Modern")
+
+corrplot(
+  cor_matrix_opponent, 
+  method = "color", 
+  type = "upper", 
+  addCoef.col = "black", 
+  tl.col = "black",
+  tl.cex = 0.6, 
+  number.cex = 0.6
+)
+```
+
+It is evident from the correlation heatmap that `NSTRate` should be dropped as a predictor due to its correlation with multiple others of $|r|>0.5$. On a similar note, there seems to be some degree of correlation between opponent parameters and their relative counterparts. Additionally there are high degrees of correlation within opponent categories like `OppStlRate` and `OppBlockPct`($r=0.83$). Subsequently, it would be smartest to exclude most of these parameters from the model, given that logistic regression hinges on linear independence of predictors.
+
+Thus, after this further limiting of predictors, we have narrowed it down to the following:
+
+-   Tournament qualities: `Season`.
+
+-   Overall tempo: `Adjusted Temo`.
+
+-   Offensive performance: `Adjusted Offensive Efficiency`, `eFGPct`, `ORPct`, `FTRate`, `OffFT`, `Off2PtFG`
+
+-   Defensive performance: `DefFT`, `Def2PtFG`
+
+-   Overarching metrics: `FG3Rate`, `ARate`, `StlRate`
+
+-   Team qualities: `EffectiveHeight`, `Experience`, `Bench`.
+
+#### c. Low-variance Pruning
+
+Similarly, as a means of reducing the number of relevant predictive variables, the variance of predictors was assessed. This is mostly due to the notion that low-variance predictors carry little useful information for modeling and cannot meaningfully explain differences in the outcome by introducing noise, increasing complexity, and overfitting. Below is a list of the variance of all previous predictors (see raw code in VI.vi).
+
+```{r, echo = FALSE}
+all_predictors <- tournament_data_all[c("Season", "Adjusted Temo", "Adjusted Offensive Efficiency", "eFGPct", "ORPct", "FTRate", "OffFT", "Off2PtFG", "DefFT", "Def2PtFG",  "FG3Rate", "ARate", "StlRate","EffectiveHeight", "Experience", "Bench")]
+
+predictor_variances <- apply(all_predictors, 2, var, na.rm = TRUE)
+
+variance_table <- data.frame(
+  Predictor = names(predictor_variances),
+  Variance = round(as.numeric(predictor_variances),4)
+)
+
+datatable(
+  variance_table,
+  options = list(
+    pageLength = 16,  # Show all rows if you want, or adjust
+    order = list(list(1, 'asc'))  # Order by Variance ascending
+  ),
+  caption = "Table 2: Variance of Predictors",
+  rownames = FALSE
+)
+```
+
+It is evident that the variance for team `StlRate` is extremely low (\<0.001). Subsequently, it will be removed from the models due to the previously mentioned facts. All other predictors have high enough variances to appear to not introduce unnecessary noise to the models. Thus, the final parameters that will be employed for the initial modelling are the following:
+
+-   Tournament qualities: `Season`.
+
+-   Overall tempo: `Adjusted Temo`.
+
+-   Offensive performance: `Adjusted Offensive Efficiency`, `eFGPct`, `ORPct`, `FTRate`, `OffFT`, `Off2PtFG`
+
+-   Defensive performance: `DefFT`, `Def2PtFG`
+
+-   Overarching metrics: `FG3Rate`, `ARate`
+
+-   Team qualities: `EffectiveHeight`, `Experience`, `Bench`.
+
+### iii. Model Fitting and Assesment
+
+Considering the objective of the project, predicting the winner of hypothetical college basketball matchups, logistic regression will be employed as it returns the predicted probability between two binary classes. In this case, the binary outcomes are framed around progressively more competitive stages of the tournament: (a) making it to final four, (b) making it to the final, and (c) winning the title. Each of these outcomes can be naturally encoded as a binary variable, making logistic regression a strong initial modeling choice. Furthermore, the regression method provides clear interpretability of how distinct team metrics influence progression.
+
+Considering all the above, the model fitting process will involve training separate logistic regressions for each binary target. This way, we can get the predicted probabilities that a team makes it to each round of the tournament. Subsequently, the probability that a team wins the tournament can be roughly modeled as a series of independent events of the form: $$P(Champion) = P(Final\space Four)\times P(Final|Made\space It\space To\space Final\ Four)\times P(Champion|Made\ It\ To\ Final)$$ Subsequently, the probabilities that will be modeled are $P(Final\space Four)$, $P(Final|Made\space It\space To\space Final\ Four)$, and $P(Champion|Made\ It\ To\ Final)$. Subsequently, the models will be trained on sequentially filtered data.
+
+#### a. Team Made It To Final Four?
+
+Firstly, a model to predict whether a team made it to the final four will be produced. Evidently, this data is significantly skewed given that only 4 teams make it out of the 64 that participate every year. Subsequently, the positive cases will be upsampled as a means of training the model on both positive and negative cases. Subsequently preventing the negative cases from adding too much noise. The logistic regression model was fitted employing the previously narrowed down parameters. However, an additional VIF analysis was carried out as a means of assessing any multicollinearity concerns that may have been skipped in previous analysis (see raw code in VI.vii).
+
+```{r, echo = FALSE}
+set.seed(123)
+### Prepare dataset for modeling
+tournament_data_ff <- tournament_data_all |>
+  mutate(`Final Four?` = factor(`Final Four?`, levels = c("No", "Yes")))
+
+ff_train_data <- upSample(
+  x = tournament_data_ff[, setdiff(names(tournament_data_ff), "Final Four?")],
+  y = tournament_data_ff$`Final Four?`,
+  yname = "Final Four?"
+)
+
+# Fit logistic regression
+final_four_model <- glm(`Final Four?` ~ `Season` + `Adjusted Temo` + `Adjusted Offensive Efficiency` +
+                          `eFGPct` + `ORPct` + `FTRate` + `OffFT` + `Off2PtFG` +
+                          `DefFT` + `Def2PtFG` + `FG3Rate` + `ARate` +
+                          `EffectiveHeight` + `Experience` + `Bench`,
+                        data = ff_train_data,
+                        family = "binomial")
+vif(final_four_model)
+```
+
+It is evident that `eFGPct`, `FTRate`, `OffFT`, `Off2PtFG`, and `FG3Rate` exhibit concerrning multicollinearity as evidenced by the VIF greater than 5. Subsequently, all but `eFGPct` and `FTRate` will be dropped as predictors (see raw code in VI.viii).
+
+```{r, echo = FALSE}
+final_four_model_v2 <- glm(`Final Four?` ~ `Season` + `Adjusted Temo` + `Adjusted Offensive Efficiency` +
+                          `eFGPct` + `ORPct` + `FTRate` +
+                          `DefFT` + `Def2PtFG` + `ARate` +
+                          `EffectiveHeight` + `Experience` + `Bench`,
+                        data = ff_train_data,
+                        family = "binomial")
+datatable(
+  tidy(final_four_model_v2),
+  caption = "Table 3: Non-multicollinear final four model",
+  rownames = FALSE
+)
+```
+
+It is evident that some parameters have possible inferential considerations, such as `Adjusted Temo`,`Adjusted Offensive Efficiency`, `eFGPct`, `DefFT`, `Def2PtFG`, `ARate`, `Effective Height`, `Expertise` and `Bench` given that all their p-values are lower than 0.05. Nevertheless, the purposes of this modeling is prediction so an ROC curve will be plotted to assess the models predictive power.
+
+```{r, echo =FALSE, fig.cap="Figure 4. ROC curve showcases a fantastic AUC really close to 1, meaning the model is great at discerning between teams that make it to the final four and those that do not (see raw code in VI.ix)"}
+tournament_data_ff$`Final Four?` <- factor(tournament_data_ff$`Final Four?`, levels = c("No", "Yes"))
+
+# 2. Predict probabilities
+tournament_data_ff$pred_prob <- predict(final_four_model_v2, newdata = tournament_data_ff, type = "response")
+
+# 3. ROC Curve
+roc_data_ff <- roc_curve(
+  tournament_data_ff,
+  truth = `Final Four?`,
+  pred_prob,
+  event_level = "second"  # second = "Yes"
+)
+
+# 4. AUC
+auc_val_ff <- roc_auc(
+  tournament_data_ff,
+  truth = `Final Four?`,
+  pred_prob,
+  event_level = "second"
+)$.estimate
+
+# 5. Plot with AUC in title
+autoplot(roc_data_ff) +
+  ggtitle(paste0("ROC Curve: Final Four Model (AUC = ", round(auc_val_ff, 3), ")")) +
+  labs(caption = "Prediction evaluated on original dataset (imbalanced).") +
+  theme_minimal()
+```
+
+The model is great at predicting which teams make it to the 4-team round of the tournament! Making it optimal for out purposes.
+
+#### b. Team Made It To Final?
+
+As a means of modeling whether the selected made it to the final round of the NCAA tournament, the dataset will be filtered by teams that made it past the final four in the first place. Doing this filter leaves us with 88 observations. Due to this small sample size, a maximum number of 8 predictors will be employed as a means of having at least 10 observations per predictor (see raw code in VI.x).
+
+```{r, echo = FALSE}
+### Fix dataset for modeling
+tournament_data_final <- tournament_data_all |>
+   filter(`Final Four?` == "Yes") |>
+   mutate(`Tournament Championship?` = factor(`Tournament Championship?`, levels = c("No", "Yes")))
+
+final_model <- glm(`Tournament Championship?` ~  `Season` + `Adjusted Temo` +  
+                     `Adjusted Offensive Efficiency` + `eFGPct`+  `ORPct` +
+                     `EffectiveHeight`+ `Experience`+ `Bench`
+                     ,
+                      data = tournament_data_final,
+                      family = "binomial")
+  datatable(
+  tidy(final_model),
+  caption = "Table 4: NCAA Final Model Output",
+  rownames = FALSE
+)
+```
+
+Once again, the p-values are really high making the parameters not useful for inference on estimates. However, the purpose of the model is prediction of probabilities. Subsequently, an ROC curve will be plotted as a means of measuring the models predictive power.
+
+```{r, echo = FALSE, fig.cap="Figure 5. ROC curve showcases modest AUC geater than 0.7. Thus the model is better at predicting than blind guessing (see raw code in VI.xi)"}
+model_data_used <- model.frame(final_model)
+
+pred_prob <- predict(final_model, type = "response")
+
+model_data_used$pred_prob <- pred_prob
+
+
+roc_data <- roc_curve(
+  model_data_used,
+  truth = `Tournament Championship?`,
+   pred_prob,
+  event_level = "second"
+)
+
+auc_val <- roc_auc(model_data_used, truth = `Tournament Championship?`, pred_prob, event_level = "second")$.estimate
+
+autoplot(roc_data) +
+  ggtitle(paste0("ROC Curve: NCAA Final Model (AUC = ", round(auc_val, 3), ")")) +
+  theme_minimal()
+```
+
+The model has an AUC of 0.714, meaning it is better at predicting than blind guessing. This is optimal for our purposes, predicting which team will perform better than another one in a hypothetical matchup.
+
+#### c. Team Won The Title?
+
+For modeling whether the selected team won the title, first the original data set was filtered only for those team who had made it to the final in the first place. From this filtering, it evident that there are only 44 observations of teams that have made it to the championship between 2002 and 2025. Considering this, only 4 predictor variables will be employed for fitting the model as a means to prevent over fitting. Consequently, only the 4 most all-encompassing parameters will be employed for estimation: `Adjusted Offensive Efficiency`, `eFGPct`, `Season`, and `EffectiveHeight`. Although the sample size is small, bootstrapping and other resampling techniques will not be employed given that the purpose of the model is prediction not inference (see raw code in VI.xii).
+
+```{r, echo = FALSE}
+### Fix dataset for modeling
+tournament_data_title <- tournament_data_all |>
+   filter(`Final Four?` == "Yes" & `Tournament Championship?` == "Yes") |>
+   mutate(`Tournament Winner?` = as.factor(`Tournament Winner?`)) |>
+   mutate(`Tournament Winner?` = factor(`Tournament Winner?`, levels = c("No", "Yes")))
+
+champion_model <- glm(`Tournament Winner?` ~ `Adjusted Offensive Efficiency` + `eFGPct` + 
+                        `Season` + `EffectiveHeight`,
+                      data = tournament_data_title,
+                      family = "binomial")
+  datatable(
+  tidy(champion_model),
+  caption = "Table 5: Championsip Model Output",
+  rownames = FALSE
+)
+```
+
+Provided this model, an ROC curve will be performed as a means of assessing the model's predictive power. Parameters will not be interpreted due to their high p-values and the lack of emphasis on inference throughout the project.
+
+```{r, echo = FALSE, fig.cap="Figure 6. ROC curve showcases modest AUC geater than 0.7. Thus the model is better at predicting than blind guessing (see raw code in VI.xiii)"}
+model_data_used <- model.frame(champion_model)
+
+# 2. Predict probabilities on those rows
+pred_prob <- predict(champion_model, type = "response")
+
+# 3. Attach predictions
+model_data_used$pred_prob <- pred_prob
+
+
+roc_data <- roc_curve(
+  model_data_used,
+  truth = `Tournament Winner?`,
+   pred_prob,
+  event_level = "second"
+)
+
+auc_val <- roc_auc(model_data_used, truth = `Tournament Winner?`, pred_prob, event_level = "second")$.estimate
+
+autoplot(roc_data) +
+  ggtitle(paste0("ROC Curve: Championship Model (AUC = ", round(auc_val, 3), ")")) +
+  theme_minimal()
+```
+
+Considering all of the above, we have developed three statistical models that provide the probability a team passes to the next round of the tournament given they passed the previous one (final four, championship, and title). These probabilistic outputs will be employed by the Shiny Dashboard implementation to drive hypothetical outcomes of match ups. These models are `champion_model`, `final_model`, and `final_four_model_v2`. These will be employed as the engine for predicting by multiplying the inputted probabilities and choosing the team with a higher one. The models will be saves in the respective .R files for later use in Shiny dashboard (see raw code in VI.xiv).
+
+```{r save-models, eval=TRUE, echo = FALSE}
+dir.create("models", showWarnings = FALSE)
+
+# Save models
+saveRDS(final_four_model_v2, "models/final_four_model_v2.rds")
+saveRDS(final_model, "models/final_model.rds")
+saveRDS(champion_model, "models/champion_model.rds")
+```
+
+### iv. Shiny Dashboard Implementation
+
+The Shiny Dashboard packages the information we want to express in an easy-to-use platform. In fact, in stark contrast to the advanced statistical methods used, the dashboard is incredibly simple, with the only inputs from the user being year, Team 1, and Team 2. The dashboard is coded in the .R file in the following way:
+
+First, we load the CSV data using read_csv and read in the pre-trained logistical regression models. We package them into a list, to gracefully return NULL if an error occurs while reading in. The UI of our shiny package is simple, using the flatly shinytheme with a sidebar and main panel. The sidebar includes the inputs for season, team 1, and team 2, and has an actionButton. The server logic is built through a function that takes input, output, and session, stopping if the files aren't found. We then initialize the season selector with updateSelectInput with the most recently selected season. When a season is selected, we use observeEvent to updateSelectInput with the new team selected out of the choices (all teams).
+
+We get stats for each selected team by filtering all the data for the given season and team name (accounting for the teams not being the same) and predict win probability using the 3 models for each team. We multiply these 3 results. The idea here is multiplying the probability of making the final four times the probability of making the final given making the final four, and same for being the champion given making it to the final. We then convert the absolute probability into a matchup probability using our formula on the log-odds, i.e. log of the probability/1-probability. The chance team 1 wins is 100\*exp(score1)/exp(score1)+exp(score2). We then output the winner using render text. If win1 is greater, we paster that the predicted winner is team 1 and vice versa. We also renderTable with a data frame that is composed of each team and their respective probabilities to win the hypothetical matchup. Then, we launch!
+
+## III. Discussion
+
+### i. Models
+
+#### a. Strengths
+
+A major strength of the modeling pipeline employed relies in its systematic and transparent variable selection process. By beginning with 165 predictors and narrowing down to fewer than 15 through domain-informed pruning, correlation filtering, and variance analysis, the final models are both parsimonious and interpretable.
+
+Moreover, the modeling process is logically staged to reflect the sequential structure of the NCAA tournament itself. Rather than predicting a binary outcome in isolation, the pipeline recognizes that winning the championship is contingent on prior advancement. This hierarchical prediction framework provides a more realistic, interpretative architecture perfect for bracket building.
+
+Importantly, the framework maintains a strong focus on predictive performance with ROC curves and AUC values reported at each stage. With each model being at least modestly predictive regardless of small training set.
+
+#### b. Limitations
+
+Despite the strengths, several limitations merit attention. First is the small sample size at later stages of the tournament. While the Final Four model benefits from a large training ser bolstered by upsampling, the Final and Champion models are trained on only 88 and 44 observations respectively. This small sample size constrains the number of predictors that can be included due to the ("10 events per variable" rule of thumb), potentially omitting relevant features.
+
+Additionally, the use of upsampling to balance rare positive classes may inadvertently lead to overfitting on the synthetic cases. While it was necessary to balance training, it introduces artificial duplication, which may inflate performance metrics like AUC.
+
+The reliance on logistic regression, although beneficial for interpretation, may also be a limitation. Logistic models assume linearity in the log-odds and independence of predictors. Given the complexity of basketball, these assumptions may undercut the model's ability to capture nuanced patterns (i.e a team being "hot", a player getting injured during a matchup, among others).
+
+Finally, the use of season-aggregated statistics obviates this aforementioned nuances.
+
+#### c. Further Directions
+
+Future work can address these limitation through several promising avenues. First, incorporating methods that could handle nonlinear relationships and interactions such as random forests and gradient boosting machines (Sarvandani, 2023). Techniques like LASSO or Ridge could also be explored to mitigate overfitting.
+
+Similarly, cross-validation and external validation using historical seasons as folds or test sets would provide a more robust measure of generalizability for late stage models.
+
+Lastly, while the current models operate independently, joint modeling approaches could allow probabilistic dependencies to be more explicitly modeled across rounds (Alsefri et. al, 2023).
+
+### ii. Shiny Dashboard
+
+#### a. Strengths
+
+The Shiny app/dashboard has several strengths. First, it provides a clean and intuitive user interface for users to interact with. This allows users to create hypothetical match ups and see how each team would fare. Similarly, this allows the user to utilize the model, with any need to understand the underlying code.
+
+Second, the app is interactive. This allows the user to quickly test out new match ups by simply selecting year and school for both teams. By being interactive, we are able to make the app more personalized as well, allowing users to select matchups that they are curious about.
+
+Finally, we added modal boxes for each team selected. This allows the user to quickly view each teams key stats. By adding this, we are able to give more context to the model and allow the user to see each teams key strengths and weaknesses.
+
+#### b. Limitations
+
+While the Shiny app does create a better user experience, there are also areas for improvement. First, we would like to increase model transparency. Right now, the matchup predictor simply provides the odds of each team winning. While someone who has the code can see what statistics are utilized, other may not have access to it or the ability to interpret it.
+
+Seconds, while we have provided some aesthetic enhancements, the coud benefit from further additions and a futher improved UI.
+
+Finally, the Shiny app only compares one on one matchups. While this is still useful, there could be demand from users to add in how multiple teams would fare in a tournament together or even simulate full tournaments.
+
+#### c. Future Directions
+
+There are several future steps that could improve the Shiny app. First, as mentioned above, the UI and in-app experience could be improved. This could be enhanced by adding in team colors and logos, making the page more sleek, create different pages, and add more model options. We could also add in better matchup or tournament visualizations. For example, showing how a team would be expected to advance through a bracket could be interesting to users.
+
+Second, users could benefit from the addition of a model information section. This would allow users, with or without coding knowledge, to understand how the model works behind the scenes. This would give the model more context and validity as users can see how each team's statistics affect their performance.
+
+Finally, we could make the model itself more interactive. We could allow users to select their own metrics to include as well as heavily to weight each. This could allow users, particularly those with more basketball knowledge, to test out more complex situations and give a deeper understanding to how some teams strengths and weaknesses affect the outcomes. Similarly, we could allow users to put in their own metrics for a hypothetical team and see how that team performs against historical teams.
+
+## IV. Conclusion
+
+In essence, this project sought to transform a large set of historical NCAA basketball team statistics into an effective prediction system for the March Madness tournament. Beginning with 165 raw metrics, we employed a thoughtful and rigorous filtering approach (domain-informed pruning, correlation and VIF filtering, and variance analysis) to narrow our model to the 15 most informative predictors for model efficiency and to prevent over-fitting/multicollinearity.
+
+We then fit three sequential logistic regressions - "Final Four", "Championship", and "Title" models - all delivering solid predictive power (AUC \> 0.70) with our Final-Four model achieving near perfect discrimination (AUC \~ 0.99). Here, we estimated a given team's chance to reach the semifinals, predicted which of those semifinalists will make the championship, then which finalist will win the title. By chaining these probabilities multiplicatively, we effectively determined each team's overall win-probability to use for head-to-head comparisons.
+
+We successfully packaged these models into an accessible and simple Shiny dashboard. Users simply select two teams (from any year ranging from 2002-2025) and receive a clear "Predicted Winner' along with their win-percentage and supporting modals showing each team's key metrics. This UI combines complex statistical machinery with an engaging, user-friendly platform.
+
+Ultimately, while our approach succeeds in terms of transparency and aligns well with the tournament structure, it has limitations such as small sample sizes at later stages and reliance on linear log-odds assumptions (which cannot capture the nuances of real game-play). Future work could investigate regularized models and season-fold cross-validation to further boost both accuracy and reliability. Overall, our approach sharpens NCAA tournament predictions and combines complex analysis with user-friendly tools, demonstrating the power of data-driven sports forecasting.
+
+## V. Sources
+
+-   Alsefri, M., Sudell, M., García-Fiñana, M., & Kolamunnage-Dona, R. (2020). Bayesian joint modelling of longitudinal and time to event data: A methodological review. BMC Medical Research Methodology, 20(1). https://doi.org/10.1186/s12874-020-00976-2
+
+-   How can you analyze non-linear relationships in datasets? (s/f). Recuperado el 1 de mayo de 2025, de https://www.linkedin.com/advice/3/how-can-you-analyze-non-linear-relationships-datasets-bqynf
+
+-   Meyers, B. (s/f). Interest in college sports is on the rise, report says. Marketing Brew. Recuperado el 27 de abril de 2025, de https://www.marketingbrew.com/stories/2024/03/05/interest-in-college-sports-is-on-the-rise
+
+-   NCAA records nearly \$1.3B in revenue for ’22-23. (2024, febrero 2). ESPN.Com. https://www.espn.com/college-sports/story/\_/id/39439274/ncaa-generates-nearly-13-billion-revenue-2022-23
+
+-   Novy-Williams, E. (2024, marzo 19). NCAA’s Cash Cow Remains (for Now) Amid Wholesale Change. Sportico.Com. https://www.sportico.com/leagues/college-sports/2024/ncaa-march-madness-revenue-billion-1234771183/
+
+-   Ota, K. (2025, marzo 20). 24.4 Million Brackets: ESPN Tournament Challenge Sets New Record for Third Consecutive Year. ESPN Press Room U.S. https://espnpressroom.com/us/press-releases/2025/03/24-4-million-brackets-espn-tournament-challenge-sets-new-record-for-third-consecutive-year/
+
+-   Pilafas, J. (s/f). March Madness Historical DataSet (2002 to 2025). March Madness Historical DataSet (2002 to 2025). Recuperado el 27 de abril de 2025, de https://www.kaggle.com/datasets/jonathanpilafas/2024-march-madness-statistical-analysis
+
+-   Sarvandani, M. (2023). Top 11 algorithms of non-linear regression in machine learning + Proposed Python library+Python code \| by Mohamadhasan Sarvandani \| Medium. https://medium.com/@mohamadhasan.sarvandani/top-algorithms-of-non-linear-regression-in-machine-learning-proposed-python-library-and-python-c871752ddd81
+
+-   The College Divisions Explained (D1 vs. D2 vs. D3) \| NCSA. (2018, enero 30). https://www.ncsasports.org/recruiting/how-to-get-recruited/college-divisions
+
+-   ChatGPT: Utilized for troubleshooting models, adding aesthetics to the Shiny app, and other, small, miscillaneous fixes.
+
+## VI. Additional Material & Raw Code
+
+### i. Setup: Packages Employed & Reading in Data
+
+```{r, eval = FALSE}
+### Loading necessary packages
+library(tidyverse)
+library(tidymodels)
+library(kableExtra)
+```
+
+```{r, eval = FALSE}
+### Reading in data
+tournament_data_all <- read_csv("data/march_madness.csv")
+```
+
+### ii. Table 1: Raw Code
+
+```{r,  eval=FALSE}
+### Using data table as a means of crafting an appealing and interactive visualization of the dataset for pruning 
+datatable(
+  head(tournament_data_all,10),
+  options = list(scrollX = TRUE),
+  class = 'compact stripe nowrap',
+   caption = tags$caption("Table 1: Kaggle March Madness Dataset sample"
+  )
+)
+```
+
+### iii. Figure 1: Raw Code
+
+```{r, eval = FALSE, fig.cap="Figure 1. Correlation heatmap for offensive and defensive parameters. Some degree of correlation is evident between AdjOE and AdjDE (r = -0.5). Likewise, TOPct seems to be correlated with a lot of other variables (see raw code in VI.iii).", warning = FALSE}
+
+cor_matrix_def_off <- cor(
+  tournament_data_all[c("Adjusted Offensive Efficiency", 
+                        "Avg Possession Length (Offense)", 
+                        "eFGPct", "ORPct", "FTRate", "OffFT", 
+                        "Off2PtFG", "Off3PtFG", "Adjusted Defensive Efficiency", 
+                        "Avg Possession Length (Defense)", 
+                        "TOPct", "DefFT", "Def2PtFG", 
+                        "Def3PtFG")]|>
+                     select(where(is.numeric)),
+                  use = "pairwise.complete.obs")
+
+par(family = "Computer Modern")
+
+corrplot(
+  cor_matrix_def_off, 
+  method = "color", 
+  type = "upper", 
+  addCoef.col = "black", 
+  tl.col = "black",
+  tl.cex = 0.6, 
+  number.cex = 0.4
+)
+```
+
+### iv. Figure 2: Raw Code
+
+```{r, eval = FALSE, fig.cap="Figure 2. Correlation heatmap among scoring parameters. It is evident that 2PT and 3PT field goals exhibit high degrees of correlation |r| > 0.5 (see raw code in VI.iv)", warning = FALSE}
+
+cor_matrix_scoring <- cor(
+  tournament_data_all[c("FG2Pct", "FG3Pct", "FTPct", 
+                        "FG3Rate", "eFGPct",
+                        "FTRate", "OffFT", "Off2PtFG", 
+                        "Off3PtFG", "DefFT", "Def2PtFG", 
+                         "Def3PtFG"
+                        )]|>
+                     select(where(is.numeric)),
+                  use = "pairwise.complete.obs")
+
+par(family = "Computer Modern")
+
+corrplot(
+  cor_matrix_scoring, 
+  method = "color", 
+  type = "upper", 
+  addCoef.col = "black", 
+  tl.col = "black",
+  tl.cex = 0.6, 
+  number.cex = 0.6
+)
+```
+
+### v. Figure 3: Raw Code
+
+```{r, eval = FALSE, fig.cap="Figure 3. Correlation heatmap among opponent metrics and their team counterparts. NSTRate is highly correlated with multiple predictors. Subsequently, it will be dropped (see raw code in VI.v).", warning = FALSE}
+
+cor_matrix_opponent <- cor(
+  tournament_data_all[c("OppFG2Pct",
+                        "OppBlockPct",
+                        "OppARate", 
+                        "OppStlRate", 
+                        "OppNSTRate",
+                        "FG2Pct", 
+                        "ARate", 
+                        "StlRate",
+                        "NSTRate", 
+                        "BlockPct"
+                        )]|>
+                     select(where(is.numeric)),
+                  use = "pairwise.complete.obs")
+
+par(family = "Computer Modern")
+
+corrplot(
+  cor_matrix_opponent, 
+  method = "color", 
+  type = "upper", 
+  addCoef.col = "black", 
+  tl.col = "black",
+  tl.cex = 0.6, 
+  number.cex = 0.6
+)
+```
+
+### vi. Table 2: Raw Code
+
+```{r, eval = FALSE}
+all_predictors <- tournament_data_all[c("Season", "Adjusted Temo", "Adjusted Offensive Efficiency", "eFGPct", "ORPct", "FTRate", "OffFT", "Off2PtFG", "DefFT", "Def2PtFG",  "FG3Rate", "ARate", "StlRate","EffectiveHeight", "Experience", "Bench")]
+
+predictor_variances <- apply(all_predictors, 2, var, na.rm = TRUE)
+
+variance_table <- data.frame(
+  Predictor = names(predictor_variances),
+  Variance = round(as.numeric(predictor_variances),4)
+)
+
+datatable(
+  variance_table,
+  options = list(
+    pageLength = 16,  # Show all rows if you want, or adjust
+    order = list(list(1, 'asc'))  # Order by Variance ascending
+  ),
+  caption = "Table 2: Variance of Predictors",
+  rownames = FALSE
+)
+```
+
+### vii. VIF for Model 1: Raw Code
+
+```{r, eval = FALSE}
+set.seed(123)
+### Prepare dataset for modeling
+tournament_data_ff <- tournament_data_all |>
+  mutate(`Final Four?` = factor(`Final Four?`, levels = c("No", "Yes")))
+
+ff_train_data <- upSample(
+  x = tournament_data_ff[, setdiff(names(tournament_data_ff), "Final Four?")],
+  y = tournament_data_ff$`Final Four?`,
+  yname = "Final Four?"
+)
+
+# Fit logistic regression
+final_four_model <- glm(`Final Four?` ~ `Season` + `Adjusted Temo` + `Adjusted Offensive Efficiency` +
+                          `eFGPct` + `ORPct` + `FTRate` + `OffFT` + `Off2PtFG` +
+                          `DefFT` + `Def2PtFG` + `FG3Rate` + `ARate` +
+                          `EffectiveHeight` + `Experience` + `Bench`,
+                        data = ff_train_data,
+                        family = "binomial")
+vif(final_four_model)
+```
+
+### viii. Table 3: Raw Code
+
+```{r, eval = FALSE}
+final_four_model_v2 <- glm(`Final Four?` ~ `Season` + `Adjusted Temo` + `Adjusted Offensive Efficiency` +
+                          `eFGPct` + `ORPct` + `FTRate` +
+                          `DefFT` + `Def2PtFG` + `ARate` +
+                          `EffectiveHeight` + `Experience` + `Bench`,
+                        data = ff_train_data,
+                        family = "binomial")
+datatable(
+  tidy(final_four_model_v2),
+  caption = "Table 3: Non-multicollinear final four model",
+  rownames = FALSE
+)
+```
+
+### ix. Figure 4: Raw Code
+
+```{r, eval =FALSE, fig.cap="Figure 4. ROC curve showcases a fantastic AUC really close to 1, meaning the model is great at discerning between teams that make it to the final four and those that do not (see raw code in VI.ix)"}
+tournament_data_ff$`Final Four?` <- factor(tournament_data_ff$`Final Four?`, levels = c("No", "Yes"))
+
+# 2. Predict probabilities
+tournament_data_ff$pred_prob <- predict(final_four_model_v2, newdata = tournament_data_ff, type = "response")
+
+# 3. ROC Curve
+roc_data_ff <- roc_curve(
+  tournament_data_ff,
+  truth = `Final Four?`,
+  pred_prob,
+  event_level = "second"  # second = "Yes"
+)
+
+# 4. AUC
+auc_val_ff <- roc_auc(
+  tournament_data_ff,
+  truth = `Final Four?`,
+  pred_prob,
+  event_level = "second"
+)$.estimate
+
+# 5. Plot with AUC in title
+autoplot(roc_data_ff) +
+  ggtitle(paste0("ROC Curve: Final Four Model (AUC = ", round(auc_val_ff, 3), ")")) +
+  labs(caption = "Prediction evaluated on original dataset (imbalanced).") +
+  theme_minimal()
+```
+
+### x. Table 4: Raw Code
+
+```{r, eval = FALSE}
+### Fix dataset for modeling
+tournament_data_final <- tournament_data_all |>
+   filter(`Final Four?` == "Yes") |>
+   mutate(`Tournament Championship?` = factor(`Tournament Championship?`, levels = c("No", "Yes")))
+
+final_model <- glm(`Tournament Championship?` ~  `Season` + `Adjusted Temo` +  
+                     `Adjusted Offensive Efficiency` + `eFGPct`+  `ORPct` +
+                     `EffectiveHeight`+ `Experience`+ `Bench`
+                     ,
+                      data = tournament_data_final,
+                      family = "binomial")
+  datatable(
+  tidy(final_model),
+  caption = "Table 4: NCAA Final Model Output",
+  rownames = FALSE
+)
+```
+
+### xi. Figure 5: Raw Code
+
+```{r, eval = FALSE, fig.cap="Figure 5. ROC curve showcases modest AUC geater than 0.7. Thus the model is better at predicting than blind guessing (see raw code in VI.xi)"}
+model_data_used <- model.frame(final_model)
+
+pred_prob <- predict(final_model, type = "response")
+
+model_data_used$pred_prob <- pred_prob
+
+
+roc_data <- roc_curve(
+  model_data_used,
+  truth = `Tournament Championship?`,
+   pred_prob,
+  event_level = "second"
+)
+
+auc_val <- roc_auc(model_data_used, truth = `Tournament Championship?`, pred_prob, event_level = "second")$.estimate
+
+autoplot(roc_data) +
+  ggtitle(paste0("ROC Curve: NCAA Final Model (AUC = ", round(auc_val, 3), ")")) +
+  theme_minimal()
+```
+
+### xii. Table 5: Raw Code
+
+```{r, eval = FALSE}
+### Fix dataset for modeling
+tournament_data_title <- tournament_data_all |>
+   filter(`Final Four?` == "Yes" & `Tournament Championship?` == "Yes") |>
+   mutate(`Tournament Winner?` = as.factor(`Tournament Winner?`)) |>
+   mutate(`Tournament Winner?` = factor(`Tournament Winner?`, levels = c("No", "Yes")))
+
+champion_model <- glm(`Tournament Winner?` ~ `Adjusted Offensive Efficiency` + `eFGPct` + 
+                        `Season` + `EffectiveHeight`,
+                      data = tournament_data_title,
+                      family = "binomial")
+  datatable(
+  tidy(champion_model),
+  caption = "Table 5: Championsip Model Output",
+  rownames = FALSE
+)
+```
+
+### xiii. Figure 6: Raw Code
+
+```{r, eval = FALSE, fig.cap="Figure 6. ROC curve showcases modest AUC geater than 0.7. Thus the model is better at predicting than blind guessing (see raw code in VI.xiii)"}
+model_data_used <- model.frame(champion_model)
+
+# 2. Predict probabilities on those rows
+pred_prob <- predict(champion_model, type = "response")
+
+# 3. Attach predictions
+model_data_used$pred_prob <- pred_prob
+
+
+roc_data <- roc_curve(
+  model_data_used,
+  truth = `Tournament Winner?`,
+   pred_prob,
+  event_level = "second"
+)
+
+auc_val <- roc_auc(model_data_used, truth = `Tournament Winner?`, pred_prob, event_level = "second")$.estimate
+
+autoplot(roc_data) +
+  ggtitle(paste0("ROC Curve: Championship Model (AUC = ", round(auc_val, 3), ")")) +
+  theme_minimal()
+```
+
+### xiv. SaveRDS: Raw Code
+
+```{r,  eval=FALSE}
+dir.create("models", showWarnings = FALSE)
+
+# Save models
+saveRDS(final_four_model_v2, "models/final_four_model_v2.rds")
+saveRDS(final_model, "models/final_model.rds")
+saveRDS(champion_model, "models/champion_model.rds")
+```
